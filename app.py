@@ -1,6 +1,7 @@
 
 import os
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 import agency_backend as ab
@@ -102,38 +103,51 @@ def delta(cur, start, key):
     a=n(cur.get(key)); b=n(start.get(key))
     return (a-b) if a is not None and b is not None else 0
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_live(wallet, season_start_iso):
     token=ab.token()
     season_start=pd.to_datetime(season_start_iso,utc=True).to_pydatetime()
     roster=roster_rows(wallet,token)
+
+    def load_one(r):
+        ev=progression_events(r["player_id"],token)
+        start,start_dt=state_at_or_before(ev,season_start)
+        cur,last_dt=latest_state(ev)
+        if not cur:
+            return None
+        gains={k:max(0,delta(cur,start,k)) for k in ATTRS}
+        ovr=max(0,delta(cur,start,"overall"))
+        return {
+            **r,
+            "baseline_date":start_dt,
+            "last_progression":last_dt,
+            "start_ovr":n(start.get("overall")),
+            "current_ovr":n(cur.get("overall")),
+            "ovr_gain":ovr,
+            "attr_gain":sum(gains.values()),
+            **{SHORT[k]:gains[k] for k in ATTRS}
+        }
+
     rows=[]
     errors=[]
-    for i,r in enumerate(roster):
-        try:
-            ev=progression_events(r["player_id"],token)
-            start,start_dt=state_at_or_before(ev,season_start)
-            cur,last_dt=latest_state(ev)
-            if not cur:
-                continue
-            gains={k:max(0,delta(cur,start,k)) for k in ATTRS}
-            ovr=max(0,delta(cur,start,"overall"))
-            rows.append({
-                **r,
-                "baseline_date":start_dt,
-                "last_progression":last_dt,
-                "start_ovr":n(start.get("overall")),
-                "current_ovr":n(cur.get("overall")),
-                "ovr_gain":ovr,
-                "attr_gain":sum(gains.values()),
-                **{SHORT[k]:gains[k] for k in ATTRS}
-            })
-        except Exception as e:
-            errors.append(f"{r.get('player')} ({r.get('player_id')}): {e}")
-            continue
+    # Bounded pool: much faster than hundreds of sequential requests, without
+    # opening an excessive number of connections to MFL.
+    workers=min(16, max(4, len(roster)//20 if roster else 4))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures={pool.submit(load_one,r):r for r in roster}
+        for future in as_completed(futures):
+            r=futures[future]
+            try:
+                row=future.result()
+                if row:
+                    rows.append(row)
+            except Exception as e:
+                errors.append(f"{r.get('player')} ({r.get('player_id')}): {e}")
+
     out=pd.DataFrame(rows)
     out.attrs["errors"]=errors
     out.attrs["roster_count"]=len(roster)
+    out.attrs["loaded_count"]=len(rows)
     return out
 
 st.title("📈 MFL Club Development")
@@ -171,7 +185,7 @@ season_start=locals().get("season_start",else_start)
 if st.button("🔄 Refresh live data",type="primary"):
     build_live.clear()
 
-with st.spinner("Loading current club development…"):
+with st.spinner("Loading player progression from MFL — first load may take a little while…"):
     df=build_live(wallet,season_start)
 
 if df.empty:
@@ -197,6 +211,9 @@ m1.metric("Clubs",len(clubs))
 m2.metric("Players",len(df))
 m3.metric("Total OVR gained",f"+{clubs['OVR_gain'].sum():g}")
 m4.metric("Total attributes gained",f"+{clubs['ATTR_gain'].sum():g}")
+
+loaded=len(df)
+st.caption(f"Loaded progression for {loaded} players. Results are cached for 30 minutes; use Refresh live data when you want a fresh MFL pull.")
 
 st.subheader("🏆 Club development leaderboard")
 show=clubs.rename(columns={"club":"Club","OVR_gain":"OVR ↑","ATTR_gain":"ATTR ↑"})

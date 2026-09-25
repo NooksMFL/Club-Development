@@ -49,7 +49,7 @@ def event_date(e):
     return to_dt(e.get("date") or e.get("createdDateTime") or e.get("timestamp"))
 
 def progression_events(pid, token):
-    raw=ab.get(f"{ab.BASE}/players/{pid}/experiences/history", token)
+    raw=ab.get(f"/players/{pid}/experiences/history", token)
     if isinstance(raw,dict):
         for k in ("data","items","results","history","experiences"):
             if isinstance(raw.get(k),list):
@@ -108,6 +108,7 @@ def build_live(wallet, season_start_iso):
     season_start=pd.to_datetime(season_start_iso,utc=True).to_pydatetime()
     roster=roster_rows(wallet,token)
     rows=[]
+    errors=[]
     for i,r in enumerate(roster):
         try:
             ev=progression_events(r["player_id"],token)
@@ -127,9 +128,13 @@ def build_live(wallet, season_start_iso):
                 "attr_gain":sum(gains.values()),
                 **{SHORT[k]:gains[k] for k in ATTRS}
             })
-        except Exception:
+        except Exception as e:
+            errors.append(f"{r.get('player')} ({r.get('player_id')}): {e}")
             continue
-    return pd.DataFrame(rows)
+    out=pd.DataFrame(rows)
+    out.attrs["errors"]=errors
+    out.attrs["roster_count"]=len(roster)
+    return out
 
 st.title("📈 MFL Club Development")
 st.caption("Live Season 17 development across your clubs")
@@ -171,6 +176,12 @@ with st.spinner("Loading current club development…"):
 
 if df.empty:
     st.warning("No progression data could be loaded for this wallet.")
+    errs=df.attrs.get("errors",[])
+    roster_count=df.attrs.get("roster_count",0)
+    st.caption(f"Roster players found: {roster_count}")
+    if errs:
+        with st.expander("Technical details"):
+            st.code("\n".join(errs[:8]))
     st.stop()
 
 clubs=(df.groupby("club",dropna=False)

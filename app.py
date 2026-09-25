@@ -134,11 +134,23 @@ def owned_clubs(wallet, token):
             raw=ab.get(path,token)
             for x in extract_list(raw):
                 if not isinstance(x,dict): continue
-                owner=str(x.get("ownerWalletAddress") or x.get("owner") or
-                          (x.get("owner") or {}).get("walletAddress") if isinstance(x.get("owner"),dict) else "").lower()
-                # If endpoint is explicitly wallet-filtered, accept records with no exposed owner;
-                # if owner is exposed, require an exact wallet match.
-                if owner and owner != wallet.lower(): continue
+                # IMPORTANT: MFL can ignore owner query parameters and return a broad
+                # club list. Never trust the query string alone. Verify ownership from
+                # the club record itself.
+                owner_obj=x.get("owner")
+                owner=(x.get("ownerWalletAddress") or x.get("walletAddress") or
+                       x.get("ownerAddress") or x.get("ownerWallet"))
+                if not owner and isinstance(owner_obj,dict):
+                    owner=(owner_obj.get("walletAddress") or owner_obj.get("address") or
+                           owner_obj.get("wallet") or owner_obj.get("id"))
+                elif not owner and isinstance(owner_obj,str):
+                    owner=owner_obj
+                owner=str(owner or "").strip().lower()
+
+                # Reject unverifiable clubs as well as clubs belonging to somebody else.
+                # This prevents loan/opponent clubs leaking into the dashboard.
+                if not owner or owner != wallet.lower():
+                    continue
                 name=x.get("name") or x.get("clubName") or x.get("teamName")
                 cid=x.get("id") or x.get("clubId") or x.get("teamId")
                 if name:
@@ -206,8 +218,7 @@ def delta(cur, start, key):
     a=n(cur.get(key)); b=n(start.get(key))
     return (a-b) if a is not None and b is not None else 0
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def build_live(wallet, season_start_iso):
+def build_live(wallet, season_start_iso, progress_cb=None):
     token=ab.token()
     season_start=pd.to_datetime(season_start_iso,utc=True).to_pydatetime()
     roster=roster_rows(wallet,token)
@@ -215,6 +226,7 @@ def build_live(wallet, season_start_iso):
     owned_names={c["name"].strip().lower():c["name"] for c in mine}
 
     # External loan destinations must never become leaderboard clubs.
+    # If ownership cannot be verified, do NOT fall back to every current club.
     if owned_names:
         for r in roster:
             parent=(r.get("parent_club") or "").strip()
@@ -226,6 +238,8 @@ def build_live(wallet, season_start_iso):
             else:
                 r["club"]=None
         roster=[r for r in roster if r.get("club")]
+    else:
+        roster=[]
 
     def load_one(r):
         ev=progression_events(r["player_id"],token)
@@ -253,6 +267,8 @@ def build_live(wallet, season_start_iso):
     workers=min(16, max(4, len(roster)//20 if roster else 4))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures={pool.submit(load_one,r):r for r in roster}
+        completed=0
+        total=len(futures)
         for future in as_completed(futures):
             r=futures[future]
             try:
@@ -261,6 +277,9 @@ def build_live(wallet, season_start_iso):
                     rows.append(row)
             except Exception as e:
                 errors.append(f"{r.get('player')} ({r.get('player_id')}): {e}")
+            completed += 1
+            if progress_cb:
+                progress_cb(completed,total)
 
     out=pd.DataFrame(rows)
     out.attrs["errors"]=errors
@@ -305,13 +324,31 @@ else_start=DEFAULT_S17_START
 season_start=locals().get("season_start",else_start)
 
 if st.button("Refresh MFL data",type="primary"):
-    build_live.clear()
+    st.session_state.pop("club_dev_df",None)
+    st.session_state.pop("club_dev_key",None)
 
-with st.spinner("Loading player progression from MFL — first load may take a little while…"):
-    df=build_live(wallet,season_start)
+data_key=f"{wallet}|{season_start}"
+if st.session_state.get("club_dev_key") != data_key or "club_dev_df" not in st.session_state:
+    st.markdown("### Loading live progression")
+    progress=st.progress(0,text="Preparing your agency…")
+    status=st.empty()
+    def update_progress(done,total):
+        pct=int((done/total)*100) if total else 100
+        progress.progress(pct,text=f"Players checked: {done} / {total}  ·  {pct}%")
+        status.caption(f"Pulling progression history from MFL… {total-done} players remaining")
+    df=build_live(wallet,season_start,update_progress)
+    st.session_state["club_dev_df"]=df
+    st.session_state["club_dev_key"]=data_key
+    progress.progress(100,text=f"Complete · {len(df)} players loaded")
+    status.empty()
+else:
+    df=st.session_state["club_dev_df"]
 
 if df.empty:
-    st.warning("No progression data could be loaded for this wallet.")
+    if df.attrs.get("owned_clubs_found",0) == 0:
+        st.error("No clubs could be verified as owned by this wallet. External/loan clubs have been blocked rather than shown as yours.")
+    else:
+        st.warning("No progression data could be loaded for this wallet.")
     errs=df.attrs.get("errors",[])
     roster_count=df.attrs.get("roster_count",0)
     st.caption(f"Roster players found: {roster_count}")
@@ -337,7 +374,7 @@ m4.metric("Total attributes gained",f"+{clubs['ATTR_gain'].sum():g}")
 loaded=len(df)
 owned_count=df.attrs.get("owned_clubs_found",0)
 if owned_count:
-    st.caption(f"Loaded {loaded} players across clubs owned by this wallet. External loan clubs are excluded. Cached for 30 minutes.")
+    st.caption(f"Loaded {loaded} players across clubs owned by this wallet. External loan clubs are excluded. Use Refresh MFL data for a fresh pull.")
 else:
     st.warning("MFL did not expose an owned-club list through the tested club endpoints, so club ownership could not yet be verified. Do not treat loan-club attribution as final.")
 

@@ -10,33 +10,53 @@ st.set_page_config(page_title="Club Development Report", page_icon="🏟️", la
 
 st.markdown("""
 <style>
-.stApp { background: #f3efe6; color: #17212b; }
-[data-testid="stHeader"] { background: rgba(243,239,230,.94); }
-[data-testid="stSidebar"] { background:#17212b; }
-h1,h2,h3 { color:#17212b; font-family: Georgia, "Times New Roman", serif; letter-spacing:-.02em; }
-p, label, .stCaption { color:#4e5963 !important; }
+:root { color-scheme: dark; }
+.stApp {
+    background:
+      radial-gradient(circle at 85% 0%, rgba(72,95,199,.16), transparent 32rem),
+      radial-gradient(circle at 5% 45%, rgba(0,214,170,.07), transparent 28rem),
+      #080b12;
+    color:#eef2f7;
+}
+[data-testid="stHeader"] { background:rgba(8,11,18,.88); backdrop-filter:blur(12px); }
+[data-testid="stToolbar"] { right:1rem; }
+h1,h2,h3 { color:#f7f9fc; font-family:Inter,system-ui,sans-serif; letter-spacing:-.035em; }
+p,label,.stCaption { color:#9ca8b8 !important; }
 div[data-testid="stMetric"] {
-    background:#fffaf0; border:1px solid #d9d0c0; border-radius:4px;
-    padding:18px 20px; box-shadow:5px 5px 0 #17212b;
+    background:linear-gradient(145deg,#111722,#0c111a);
+    border:1px solid #222c3b; border-radius:14px;
+    padding:18px 20px; box-shadow:0 14px 34px rgba(0,0,0,.28);
 }
-div[data-testid="stMetricValue"] { color:#d85b2a; font-family:Georgia,serif; }
+div[data-testid="stMetricLabel"] { color:#7f8b9d; text-transform:uppercase; letter-spacing:.08em; }
+div[data-testid="stMetricValue"] { color:#66f2d1; font-weight:800; }
 .stButton > button {
-    background:#d85b2a; color:white; border:1px solid #17212b;
-    border-radius:2px; box-shadow:3px 3px 0 #17212b; font-weight:700;
+    background:#6d7cff; color:white; border:1px solid #8490ff;
+    border-radius:10px; font-weight:750; box-shadow:0 8px 24px rgba(109,124,255,.22);
 }
-.stButton > button:hover { background:#bd4720; color:white; border-color:#17212b; }
-div[data-baseweb="select"] > div, .stTextInput input {
-    background:#fffaf0 !important; border-color:#9b8f7d !important;
+.stButton > button:hover { background:#8290ff; color:white; border-color:#a0a8ff; }
+div[data-baseweb="select"] > div,.stTextInput input {
+    background:#0f1520 !important; border-color:#293447 !important; color:#eef2f7 !important;
 }
-[data-testid="stDataFrame"] { border:1px solid #17212b; box-shadow:5px 5px 0 #d85b2a; }
-hr { border-color:#c9beac; }
+[data-testid="stExpander"] { background:#0d121b; border:1px solid #202a39; border-radius:12px; }
+[data-testid="stDataFrame"] {
+    border:1px solid #222c3b; border-radius:14px; overflow:hidden;
+    box-shadow:0 18px 40px rgba(0,0,0,.28);
+}
 .hero {
-    border-top:8px solid #17212b; border-bottom:2px solid #17212b;
-    padding:22px 0 18px 0; margin-bottom:22px;
+    position:relative; overflow:hidden;
+    background:linear-gradient(125deg,#101725 0%,#0d1320 58%,#121b2d 100%);
+    border:1px solid #263147; border-radius:18px;
+    padding:30px 32px 28px; margin:8px 0 26px;
+    box-shadow:0 20px 50px rgba(0,0,0,.32);
 }
-.kicker { color:#d85b2a; font-weight:800; text-transform:uppercase; letter-spacing:.14em; font-size:.78rem; }
-.hero-title { font-family:Georgia,serif; color:#17212b; font-size:3.2rem; line-height:.95; font-weight:800; }
-.hero-sub { color:#59636b; margin-top:12px; font-size:1.05rem; }
+.hero:after {
+    content:""; position:absolute; width:240px; height:240px; border-radius:50%;
+    right:-65px; top:-110px; border:34px solid rgba(102,242,209,.08);
+}
+.kicker { color:#66f2d1; font-weight:800; text-transform:uppercase; letter-spacing:.16em; font-size:.73rem; }
+.hero-title { color:#f7f9fc; font-size:2.8rem; line-height:1; font-weight:850; letter-spacing:-.055em; margin-top:8px; }
+.hero-sub { color:#93a0b3; margin-top:10px; font-size:1rem; }
+.section-line { height:1px; background:linear-gradient(90deg,#6d7cff,transparent); margin:6px 0 18px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -250,9 +270,9 @@ def build_live(wallet, season_start_iso):
     return out
 
 st.markdown("""<div class="hero">
-<div class="kicker">MFL · Season 17 · Live development report</div>
-<div class="hero-title">THE CLUB<br>DEVELOPMENT REPORT</div>
-<div class="hero-sub">Which of your clubs is actually developing talent?</div>
+<div class="kicker">MFL · SEASON 17 · LIVE</div>
+<div class="hero-title">CLUB DEVELOPMENT</div>
+<div class="hero-sub">Live progression analytics across your MFL clubs.</div>
 </div>""", unsafe_allow_html=True)
 
 if "wallet" not in st.session_state:

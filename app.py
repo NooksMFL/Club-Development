@@ -6,7 +6,40 @@ import pandas as pd
 import streamlit as st
 import agency_backend as ab
 
-st.set_page_config(page_title="MFL Club Development", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Club Development Report", page_icon="🏟️", layout="wide")
+
+st.markdown("""
+<style>
+.stApp { background: #f3efe6; color: #17212b; }
+[data-testid="stHeader"] { background: rgba(243,239,230,.94); }
+[data-testid="stSidebar"] { background:#17212b; }
+h1,h2,h3 { color:#17212b; font-family: Georgia, "Times New Roman", serif; letter-spacing:-.02em; }
+p, label, .stCaption { color:#4e5963 !important; }
+div[data-testid="stMetric"] {
+    background:#fffaf0; border:1px solid #d9d0c0; border-radius:4px;
+    padding:18px 20px; box-shadow:5px 5px 0 #17212b;
+}
+div[data-testid="stMetricValue"] { color:#d85b2a; font-family:Georgia,serif; }
+.stButton > button {
+    background:#d85b2a; color:white; border:1px solid #17212b;
+    border-radius:2px; box-shadow:3px 3px 0 #17212b; font-weight:700;
+}
+.stButton > button:hover { background:#bd4720; color:white; border-color:#17212b; }
+div[data-baseweb="select"] > div, .stTextInput input {
+    background:#fffaf0 !important; border-color:#9b8f7d !important;
+}
+[data-testid="stDataFrame"] { border:1px solid #17212b; box-shadow:5px 5px 0 #d85b2a; }
+hr { border-color:#c9beac; }
+.hero {
+    border-top:8px solid #17212b; border-bottom:2px solid #17212b;
+    padding:22px 0 18px 0; margin-bottom:22px;
+}
+.kicker { color:#d85b2a; font-weight:800; text-transform:uppercase; letter-spacing:.14em; font-size:.78rem; }
+.hero-title { font-family:Georgia,serif; color:#17212b; font-size:3.2rem; line-height:.95; font-weight:800; }
+.hero-sub { color:#59636b; margin-top:12px; font-size:1.05rem; }
+</style>
+""", unsafe_allow_html=True)
+
 try:
     if "MFL_REFRESH_TOKEN" in st.secrets:
         os.environ["MFL_REFRESH_TOKEN"] = st.secrets["MFL_REFRESH_TOKEN"]
@@ -57,6 +90,50 @@ def progression_events(pid, token):
                 raw=raw[k]; break
     return raw if isinstance(raw,list) else []
 
+
+def extract_list(payload):
+    if isinstance(payload,list): return payload
+    if isinstance(payload,dict):
+        for k in ("data","items","results","clubs","teams"):
+            if isinstance(payload.get(k),list): return payload[k]
+            if isinstance(payload.get(k),dict):
+                nested=extract_list(payload[k])
+                if nested: return nested
+    return []
+
+def owned_clubs(wallet, token):
+    """Try MFL's wallet/club endpoints and return clubs actually owned by wallet."""
+    candidates=[
+        f"/clubs?ownerWalletAddress={wallet}",
+        f"/clubs?owner={wallet}",
+        f"/teams?ownerWalletAddress={wallet}",
+    ]
+    found=[]
+    for path in candidates:
+        try:
+            raw=ab.get(path,token)
+            for x in extract_list(raw):
+                if not isinstance(x,dict): continue
+                owner=str(x.get("ownerWalletAddress") or x.get("owner") or
+                          (x.get("owner") or {}).get("walletAddress") if isinstance(x.get("owner"),dict) else "").lower()
+                # If endpoint is explicitly wallet-filtered, accept records with no exposed owner;
+                # if owner is exposed, require an exact wallet match.
+                if owner and owner != wallet.lower(): continue
+                name=x.get("name") or x.get("clubName") or x.get("teamName")
+                cid=x.get("id") or x.get("clubId") or x.get("teamId")
+                if name:
+                    found.append({"id":cid,"name":str(name)})
+            if found: break
+        except Exception:
+            pass
+    # unique by name
+    seen=set(); out=[]
+    for c in found:
+        key=c["name"].strip().lower()
+        if key not in seen:
+            seen.add(key); out.append(c)
+    return out
+
 def roster_rows(wallet, token):
     raw=ab.roster_payload(wallet, token)
     rows=[]
@@ -70,7 +147,13 @@ def roster_rows(wallet, token):
         name=p.get("name") or m.get("name")
         if not name:
             name=(str(p.get("firstName") or m.get("firstName") or "")+" "+str(p.get("lastName") or m.get("lastName") or "")).strip()
-        rows.append({"player_id":pid,"player":name or f"Player {pid}","club":meta.get("club") or "Unassigned"})
+        current_club=meta.get("club") or "Unassigned"
+        parent_club=(p.get("parentClub") or p.get("owningClub") or p.get("registeredClub") or
+                     m.get("parentClub") or m.get("owningClub") or m.get("registeredClub"))
+        if isinstance(parent_club,dict):
+            parent_club=parent_club.get("name") or parent_club.get("clubName")
+        rows.append({"player_id":pid,"player":name or f"Player {pid}",
+                     "club":current_club,"parent_club":parent_club})
     return rows
 
 def state_at_or_before(events, cutoff):
@@ -108,6 +191,21 @@ def build_live(wallet, season_start_iso):
     token=ab.token()
     season_start=pd.to_datetime(season_start_iso,utc=True).to_pydatetime()
     roster=roster_rows(wallet,token)
+    mine=owned_clubs(wallet,token)
+    owned_names={c["name"].strip().lower():c["name"] for c in mine}
+
+    # External loan destinations must never become leaderboard clubs.
+    if owned_names:
+        for r in roster:
+            parent=(r.get("parent_club") or "").strip()
+            current=(r.get("club") or "").strip()
+            if parent.lower() in owned_names:
+                r["club"]=owned_names[parent.lower()]
+            elif current.lower() in owned_names:
+                r["club"]=owned_names[current.lower()]
+            else:
+                r["club"]=None
+        roster=[r for r in roster if r.get("club")]
 
     def load_one(r):
         ev=progression_events(r["player_id"],token)
@@ -148,10 +246,14 @@ def build_live(wallet, season_start_iso):
     out.attrs["errors"]=errors
     out.attrs["roster_count"]=len(roster)
     out.attrs["loaded_count"]=len(rows)
+    out.attrs["owned_clubs_found"]=len(mine)
     return out
 
-st.title("📈 MFL Club Development")
-st.caption("Live Season 17 development across your clubs")
+st.markdown("""<div class="hero">
+<div class="kicker">MFL · Season 17 · Live development report</div>
+<div class="hero-title">THE CLUB<br>DEVELOPMENT REPORT</div>
+<div class="hero-sub">Which of your clubs is actually developing talent?</div>
+</div>""", unsafe_allow_html=True)
 
 if "wallet" not in st.session_state:
     st.session_state.wallet=""
@@ -182,7 +284,7 @@ with st.expander("Season settings"):
 else_start=DEFAULT_S17_START
 season_start=locals().get("season_start",else_start)
 
-if st.button("🔄 Refresh live data",type="primary"):
+if st.button("Refresh MFL data",type="primary"):
     build_live.clear()
 
 with st.spinner("Loading player progression from MFL — first load may take a little while…"):
@@ -213,9 +315,13 @@ m3.metric("Total OVR gained",f"+{clubs['OVR_gain'].sum():g}")
 m4.metric("Total attributes gained",f"+{clubs['ATTR_gain'].sum():g}")
 
 loaded=len(df)
-st.caption(f"Loaded progression for {loaded} players. Results are cached for 30 minutes; use Refresh live data when you want a fresh MFL pull.")
+owned_count=df.attrs.get("owned_clubs_found",0)
+if owned_count:
+    st.caption(f"Loaded {loaded} players across clubs owned by this wallet. External loan clubs are excluded. Cached for 30 minutes.")
+else:
+    st.warning("MFL did not expose an owned-club list through the tested club endpoints, so club ownership could not yet be verified. Do not treat loan-club attribution as final.")
 
-st.subheader("🏆 Club development leaderboard")
+st.markdown("## Club table")
 show=clubs.rename(columns={"club":"Club","OVR_gain":"OVR ↑","ATTR_gain":"ATTR ↑"})
 st.dataframe(show,use_container_width=True,hide_index=False,
     column_config={
@@ -230,7 +336,7 @@ st.dataframe(show,use_container_width=True,hide_index=False,
         "Avg OVR / player":st.column_config.NumberColumn(format="+%.2f"),
     })
 
-st.subheader("🔍 Club detail")
+st.markdown("## Inside the club")
 club=st.selectbox("Choose a club",clubs["club"].tolist())
 detail=df[df.club==club].copy().sort_values(["ovr_gain","attr_gain"],ascending=False)
 detail["baseline_date"]=pd.to_datetime(detail["baseline_date"],utc=True,errors="coerce")

@@ -122,46 +122,42 @@ def extract_list(payload):
     return []
 
 def owned_clubs(wallet, token):
-    """Try MFL's wallet/club endpoints and return clubs actually owned by wallet."""
+    """
+    Use the same walletAddress clubs feed as the MFL web app.
+    The response contains both owned clubs and clubs where the wallet has a
+    staff/manager role. Only title == MFL_OWNER counts as ownership.
+    """
     candidates=[
-        f"/clubs?ownerWalletAddress={wallet}",
-        f"/clubs?owner={wallet}",
-        f"/teams?ownerWalletAddress={wallet}",
+        f"/clubs?walletAddress={wallet}&withStaffContracts=true&withLeague=true",
+        f"/clubs?walletAddress={wallet}&withLeague=true",
+        f"/clubs?walletAddress={wallet}",
     ]
     found=[]
     for path in candidates:
         try:
             raw=ab.get(path,token)
-            for x in extract_list(raw):
-                if not isinstance(x,dict): continue
-                # IMPORTANT: MFL can ignore owner query parameters and return a broad
-                # club list. Never trust the query string alone. Verify ownership from
-                # the club record itself.
-                owner_obj=x.get("owner")
-                owner=(x.get("ownerWalletAddress") or x.get("walletAddress") or
-                       x.get("ownerAddress") or x.get("ownerWallet"))
-                if not owner and isinstance(owner_obj,dict):
-                    owner=(owner_obj.get("walletAddress") or owner_obj.get("address") or
-                           owner_obj.get("wallet") or owner_obj.get("id"))
-                elif not owner and isinstance(owner_obj,str):
-                    owner=owner_obj
-                owner=str(owner or "").strip().lower()
-
-                # Reject unverifiable clubs as well as clubs belonging to somebody else.
-                # This prevents loan/opponent clubs leaking into the dashboard.
-                if not owner or owner != wallet.lower():
+            records=extract_list(raw)
+            for x in records:
+                if not isinstance(x,dict):
                     continue
-                name=x.get("name") or x.get("clubName") or x.get("teamName")
-                cid=x.get("id") or x.get("clubId") or x.get("teamId")
+                # This is the authoritative discriminator observed in MFL's own
+                # response. manager/sportingDirector/headOfFootballOperations
+                # are staff roles, NOT owned clubs.
+                if str(x.get("title") or "").strip().upper() != "MFL_OWNER":
+                    continue
+                club=x.get("club") if isinstance(x.get("club"),dict) else x
+                name=club.get("name") or club.get("clubName") or club.get("teamName")
+                cid=club.get("id") or club.get("clubId") or club.get("teamId")
                 if name:
-                    found.append({"id":cid,"name":str(name)})
-            if found: break
+                    found.append({"id":cid,"name":str(name).strip()})
+            if found:
+                break
         except Exception:
             pass
-    # unique by name
+
     seen=set(); out=[]
     for c in found:
-        key=c["name"].strip().lower()
+        key=(str(c.get("id") or ""),c["name"].casefold())
         if key not in seen:
             seen.add(key); out.append(c)
     return out
@@ -286,6 +282,7 @@ def build_live(wallet, season_start_iso, progress_cb=None):
     out.attrs["roster_count"]=len(roster)
     out.attrs["loaded_count"]=len(rows)
     out.attrs["owned_clubs_found"]=len(mine)
+    out.attrs["owned_club_names"]=[c["name"] for c in mine]
     return out
 
 st.markdown("""<div class="hero">
@@ -374,7 +371,9 @@ m4.metric("Total attributes gained",f"+{clubs['ATTR_gain'].sum():g}")
 loaded=len(df)
 owned_count=df.attrs.get("owned_clubs_found",0)
 if owned_count:
-    st.caption(f"Loaded {loaded} players across clubs owned by this wallet. External loan clubs are excluded. Use Refresh MFL data for a fresh pull.")
+    st.caption(f"Loaded {loaded} players across {owned_count} clubs owned by this wallet. External loan/staff-role clubs are excluded.")
+    with st.expander("Owned clubs detected"):
+        st.write(" · ".join(df.attrs.get("owned_club_names",[])))
 else:
     st.warning("MFL did not expose an owned-club list through the tested club endpoints, so club ownership could not yet be verified. Do not treat loan-club attribution as final.")
 
